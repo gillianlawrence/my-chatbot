@@ -1,1 +1,1 @@
-# my-chatbot
+# BiteBuddy
