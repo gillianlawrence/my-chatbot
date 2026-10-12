@@ -139,6 +139,43 @@ function addBubble(kind, text) {
   return div;
 }
 
+// ---------- Copy button ----------
+// Adds a small "Copy" button to the bottom of a bot reply.
+function addCopyButton(bubble, text) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn";
+  btn.textContent = "📋 Copy";
+
+  btn.addEventListener("click", async () => {
+    // Remove the **bold** markers so the copied text is clean
+    const plain = text.replace(/\*\*/g, "");
+    let copied = false;
+
+    try {
+      await navigator.clipboard.writeText(plain);
+      copied = true;
+    } catch (e) {
+      // Older-browser fallback
+      try {
+        const temp = document.createElement("textarea");
+        temp.value = plain;
+        temp.style.position = "fixed";
+        temp.style.opacity = "0";
+        document.body.appendChild(temp);
+        temp.select();
+        copied = document.execCommand("copy");
+        temp.remove();
+      } catch (e2) { /* ignore */ }
+    }
+
+    btn.textContent = copied ? "✅ Copied!" : "Couldn't copy";
+    setTimeout(() => { btn.textContent = "📋 Copy"; }, 1500);
+  });
+
+  bubble.appendChild(btn);
+}
+
 function showThinking() {
   const div = document.createElement("div");
   div.className = "bubble bot thinking";
@@ -252,7 +289,8 @@ async function sendMessage(text) {
       addBubble("error", "I didn't get an answer that time. Try rephrasing your message.");
     } else {
       history.push({ role: "model", parts: [{ text: reply }] });
-      addBubble("bot", reply);
+      const botBubble = addBubble("bot", reply);
+      addCopyButton(botBubble, reply); // <-- the copy button
     }
   } catch (err) {
     thinkingBubble.remove();
