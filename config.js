@@ -54,7 +54,7 @@ HELPFUL HABITS:
 `,
 
   // Which Gemini model to use. "gemini-flash-latest" is a good default.
-  model: "gemini-flash-latest",
+  model: "gemini-3.1-flash-lite",
 
   // The main color of your site (a deep rose pink). Any hex color code works.
   themeColor: "#b83a6b"
