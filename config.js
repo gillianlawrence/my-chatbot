@@ -22,9 +22,9 @@ const BOT_CONFIG = {
 
   // The three buttons people can tap to get started
   starterQuestions: [
-    "What kind of food are you in the mood for?",
-    "What's your budget per person?",
-    "What matters most for this meal?"
+    "Give me 3 Mexican restaurants in Athens, GA?",
+    "What's is a cheap stop to eat nearby?",
+    "Where can I get a fancy dinner nearby?"
   ],
 
   // The bot's rules and personality. This is sent to the AI with every message.
