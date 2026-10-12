@@ -281,3 +281,21 @@ button, textarea, input { font-family: inherit; }
   .bubble.bot { margin-left: 40px; }
   .bubble.bot::before { left: -42px; width: 32px; height: 32px; }
 }
+
+.copy-btn {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.copy-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
