@@ -15,8 +15,10 @@ const keyInput = document.getElementById("keyInput");
 const rememberBox = document.getElementById("rememberBox");
 const keySave = document.getElementById("keySave");
 const keyCancel = document.getElementById("keyCancel");
+const statusEl = document.getElementById("knowledgeStatus");
 
-// The conversation so far, in the format Gemini expects
+// The conversation so far, in the format Gemini expects.
+// (This only ever holds your plain questions, never the notes.)
 let history = [];
 let isWaiting = false;
 
@@ -77,6 +79,7 @@ keySave.addEventListener("click", () => {
   saveKey(key, rememberBox.checked);
   closeKeyModal();
   addBubble("bot", "Key saved! Ask me anything. 🎉");
+  initKnowledge(); // now that there is a key, load / prepare the notes
 });
 keyInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") keySave.click();
@@ -198,148 +201,154 @@ function renderStarters() {
   }
 }
 
-// ---------- Talking to Gemini ----------
-function friendlyError(status) {
-  if (status === 400 || status === 403) {
-    return "Hmm, Google didn't accept that key. 🔑 Click the \"API key\" button and double-check that you pasted it correctly.";
+// =====================================================================
+//  KNOWLEDGE (RAG): your notes in knowledge.md
+//  Step 1: read the notes file and split it into notes.
+//  Step 2: turn each note into numbers (an "embedding") so the bot can
+//          compare notes by meaning. These are saved on your device.
+//  Step 3: for each question, pick the best-matching notes.
+// =====================================================================
+
+const CACHE_KEY = "bitebuddy_embeddings";   // where the saved numbers live
+const MAX_NOTE_LENGTH = 1500;               // longer notes get split into parts
+const EMBED_BATCH_SIZE = 50;                // most notes sent per request
+
+const KNOWLEDGE_ON = BOT_CONFIG.useKnowledge !== false;
+const WANTS_MEANING = (BOT_CONFIG.searchMethod || "meaning") !== "keywords";
+
+// Everything the bot knows about your notes right now
+let knowledge = {
+  notes: [],            // [{ title, text }]
+  vectors: null,        // one list of numbers per note (or null)
+  currentMethod: "keywords",
+  state: "off"          // "off", "loading", "missing", "empty" or "ready"
+};
+let knowledgeLoading = Promise.resolve(); // lets questions wait for loading
+let loadRun = 0;                          // used to ignore out-of-date loads
+
+// ---------- Status line under the header ----------
+function setStatus(message) {
+  if (!KNOWLEDGE_ON || !message) {
+    statusEl.hidden = true;
+    statusEl.textContent = "";
+    return;
   }
-  if (status === 404) {
-    return "I can't find that AI model. Check the model name in config.js (the default is \"gemini-flash-latest\").";
-  }
-  if (status === 429) {
-    return "Whoa, too many requests too fast! ⏳ Wait a minute and try again.";
-  }
-  if (status >= 500) {
-    return "Google's servers are having a moment. Please try again in a little while.";
-  }
-  return "Something went wrong (error " + status + "). Please try again.";
+  statusEl.textContent = message;
+  statusEl.hidden = false;
 }
 
-async function askGemini() {
-  const key = getKey();
+function updateStatus() {
+  const count = knowledge.notes.length;
+  const noteWord = count === 1 ? "note" : "notes";
+
+  if (knowledge.currentMethod === "meaning") {
+    setStatus("📚 " + count + " " + noteWord + " loaded · meaning search");
+  } else if (WANTS_MEANING && !getKey()) {
+    setStatus("📚 " + count + " " + noteWord + " loaded · keyword search (add your API key to turn on meaning search)");
+  } else if (WANTS_MEANING) {
+    setStatus("📚 " + count + " " + noteWord + " loaded · keyword search (meaning search isn't working right now)");
+  } else {
+    setStatus("📚 " + count + " " + noteWord + " loaded · keyword search");
+  }
+}
+
+// ---------- Step 1: read knowledge.md and split it into notes ----------
+// Each note starts with a line like "## Note title".
+// Anything above the first "##" line is ignored.
+function splitLongText(text, maxLength) {
+  if (text.length <= maxLength) return [text];
+
+  const paragraphs = text.split(/\n\s*\n/); // blank lines
+  const parts = [];
+  let current = "";
+
+  for (const paragraph of paragraphs) {
+    const para = paragraph.trim();
+    if (!para) continue;
+    if (current && current.length + 2 + para.length > maxLength) {
+      parts.push(current);
+      current = para;
+    } else {
+      current = current ? current + "\n\n" + para : para;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function parseNotes(markdown) {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const rawNotes = [];
+  let current = null;
+
+  for (const line of lines) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      current = { title: heading[1], lines: [] };
+      rawNotes.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    }
+    // lines before the first "##" are ignored
+  }
+
+  const notes = [];
+  for (const raw of rawNotes) {
+    const body = raw.lines.join("\n").trim();
+    if (!body) continue; // skip a title with no text
+    const parts = splitLongText(body, MAX_NOTE_LENGTH);
+    parts.forEach((part, index) => {
+      const title = parts.length === 1
+        ? raw.title
+        : raw.title + " (part " + (index + 1) + " of " + parts.length + ")";
+      notes.push({ title: title, text: part });
+    });
+  }
+  return notes;
+}
+
+// ---------- A short "fingerprint" of the notes file ----------
+// If knowledge.md changes, the fingerprint changes, and the saved
+// numbers are made again. Otherwise the saved numbers are reused.
+function hashText(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16) + "-" + text.length;
+}
+
+function loadCachedVectors(fingerprint, count) {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (
+      saved &&
+      saved.fingerprint === fingerprint &&
+      Array.isArray(saved.vectors) &&
+      saved.vectors.length === count
+    ) {
+      return saved.vectors;
+    }
+  } catch (e) { /* storage not available or damaged: just make them again */ }
+  return null;
+}
+
+function saveCachedVectors(fingerprint, vectors) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ fingerprint: fingerprint, vectors: vectors }));
+  } catch (e) { /* too big or not available: that's okay */ }
+}
+
+// ---------- Step 2: turn text into numbers (embeddings) ----------
+async function embedBatch(texts) {
+  const model = BOT_CONFIG.embeddingModel || "gemini-embedding-2";
   const url =
     "https://generativelanguage.googleapis.com/v1beta/models/" +
-    encodeURIComponent(BOT_CONFIG.model) +
-    ":generateContent";
+    encodeURIComponent(model) +
+    ":batchEmbedContents";
 
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": key
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: BOT_CONFIG.systemInstruction }] },
-      contents: history
-    })
-  });
-
-  if (!response.ok) {
-    const error = new Error("HTTP error");
-    error.status = response.status;
-    throw error;
-  }
-
-  const data = await response.json();
-  const parts =
-    data.candidates &&
-    data.candidates[0] &&
-    data.candidates[0].content &&
-    data.candidates[0].content.parts;
-
-  if (!parts) return "";
-
-  // Join the text parts, skipping any "thought" parts
-  return parts
-    .filter((part) => !part.thought && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("");
-}
-
-function setWaiting(waiting) {
-  isWaiting = waiting;
-  sendBtn.disabled = waiting;
-}
-
-async function sendMessage(text) {
-  text = text.trim();
-  if (!text || isWaiting) return;
-
-  if (!getKey()) {
-    addBubble("error", "I need your API key first! Click the \"API key\" button at the top and paste it in. 🔑");
-    openKeyModal();
-    return;
-  }
-
-  startersEl.innerHTML = "";
-  addBubble("user", text);
-  history.push({ role: "user", parts: [{ text: text }] });
-  inputEl.value = "";
-  resizeInput();
-  setWaiting(true);
-
-  const thinkingBubble = showThinking();
-
-  try {
-    const reply = await askGemini();
-    thinkingBubble.remove();
-
-    if (!reply) {
-      history.pop();
-      addBubble("error", "I didn't get an answer that time. Try rephrasing your message.");
-    } else {
-      history.push({ role: "model", parts: [{ text: reply }] });
-      const botBubble = addBubble("bot", reply);
-      addCopyButton(botBubble, reply); // <-- the copy button
-    }
-  } catch (err) {
-    thinkingBubble.remove();
-    history.pop(); // so you can safely try again
-    inputEl.value = text;
-    resizeInput();
-
-    if (err && err.status) {
-      addBubble("error", friendlyError(err.status));
-    } else {
-      addBubble("error", "I can't reach the internet right now. 📶 Check your connection and try again.");
-    }
-  }
-
-  setWaiting(false);
-  inputEl.focus();
-}
-
-// ---------- Input box ----------
-function resizeInput() {
-  inputEl.style.height = "auto";
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
-}
-
-inputEl.addEventListener("input", resizeInput);
-
-// Enter = send, Shift+Enter = new line
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    sendMessage(inputEl.value);
-  }
-});
-
-sendBtn.addEventListener("click", () => sendMessage(inputEl.value));
-
-// ---------- New chat ----------
-function startNewChat() {
-  history = [];
-  messagesEl.innerHTML = "";
-  addBubble("bot", BOT_CONFIG.welcomeMessage);
-  renderStarters();
-  inputEl.value = "";
-  resizeInput();
-  setWaiting(false);
-}
-
-newChatBtn.addEventListener("click", startNewChat);
-
-// ---------- Start! ----------
-applyConfig();
-startNewChat();
