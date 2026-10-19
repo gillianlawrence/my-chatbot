@@ -57,5 +57,38 @@ HELPFUL HABITS:
   model: "gemini-3.1-flash-lite",
 
   // The main color of your site (a deep rose pink). Any hex color code works.
-  themeColor: "#b83a6b"
+  themeColor: "#b83a6b",
+
+  // ===================================================================
+  //  KNOWLEDGE SETTINGS (RAG)
+  //  These control how the bot uses your own notes in knowledge.md.
+  // ===================================================================
+
+  // Turn the notes feature on or off.
+  // true = the bot looks in your notes before answering.
+  // false = the bot works exactly like before, without notes.
+  useKnowledge: true,
+
+  // The name of your notes file. Keep it in the same folder as index.html.
+  knowledgeFile: "knowledge.md",
+
+  // How the bot finds the right notes for a question:
+  // "meaning"  = smart search that understands what you mean
+  //              (for example, "cheap" can match "low price").
+  // "keywords" = simple search that looks for the same words.
+  // If "meaning" search fails, the bot switches to "keywords" by itself.
+  searchMethod: "meaning",
+
+  // How many notes to send to the AI with each question.
+  // 3 is a good start. More notes = more detail, but also more to read.
+  topK: 3,
+
+  // The Gemini model that turns text into numbers so notes can be
+  // compared by meaning. You can leave this as it is.
+  embeddingModel: "gemini-embedding-2",
+
+  // Extra rules for how the bot should use your notes.
+  // This is added to the instructions above.
+  knowledgeRules:
+    `You will receive NOTES from my knowledge file along with each question. If the notes answer the question, base your answer on them and cite the note numbers like [1]. If they don't, begin with 'I couldn't find that in my notes.' Never invent facts, dates, rules or policies that are not in the notes.`
 };
