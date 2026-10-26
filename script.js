@@ -614,21 +614,26 @@ async function findNotes(question) {
 
 // Finds the bot's personality in config.js, whatever it is called there.
 function getPersonality() {
-  const names = ["systemPrompt", "personality", "instructions", "systemInstruction", "prompt", "system"];
+  const names = ["systemInstruction", "systemPrompt", "personality", "instructions", "prompt", "system"];
+  let text = "";
   for (const name of names) {
     const value = BOT_CONFIG[name];
-    if (typeof value === "string" && value.trim()) return value;
-    if (Array.isArray(value) && value.length) return value.join("\n");
+    if (typeof value === "string" && value.trim()) { text = value; break; }
+    if (Array.isArray(value) && value.length) { text = value.join("\n"); break; }
   }
-  return "";
+  // Extra rules for using your notes (only when notes are turned on)
+  if (KNOWLEDGE_ON && typeof BOT_CONFIG.knowledgeRules === "string" && BOT_CONFIG.knowledgeRules.trim()) {
+    text += "\n\n" + BOT_CONFIG.knowledgeRules.trim();
+  }
+  return text;
 }
 
 function buildQuestionWithNotes(question, notes) {
   if (!notes.length) return question;
-  let text = "Here are notes from our own knowledge base. Use them when they are relevant to the question, and don't make up facts that aren't in them.\n\n";
-  for (const note of notes) {
-    text += "### " + note.title + "\n" + note.text + "\n\n";
-  }
+  let text = "NOTES from the knowledge file:\n\n";
+  notes.forEach((note, i) => {
+    text += "[" + (i + 1) + "] " + note.title + "\n" + note.text + "\n\n";
+  });
   text += "Customer question: " + question;
   return text;
 }
