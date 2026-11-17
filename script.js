@@ -17,6 +17,12 @@ const keySave = document.getElementById("keySave");
 const keyCancel = document.getElementById("keyCancel");
 const statusEl = document.getElementById("knowledgeStatus");
 
+// Adds a listener only if the element exists, so one missing piece of the
+// page can't stop the whole chatbot from starting.
+function on(element, eventName, handler) {
+  if (element) element.addEventListener(eventName, handler);
+}
+
 // The conversation so far, in the format Gemini expects.
 // (This only ever holds your plain questions, never the notes.)
 let history = [];
@@ -25,12 +31,19 @@ let isWaiting = false;
 const CHAT_KEY = "bitebuddy_chat"; // where the saved conversation lives
 
 // ---------- Set up the page from config.js ----------
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el && value !== undefined) el.textContent = value;
+}
+
 function applyConfig() {
   document.title = BOT_CONFIG.name;
-  document.getElementById("botName").textContent = BOT_CONFIG.name;
-  document.getElementById("botEmoji").textContent = BOT_CONFIG.emoji;
-  document.getElementById("botTagline").textContent = BOT_CONFIG.tagline;
-  document.documentElement.style.setProperty("--accent", BOT_CONFIG.themeColor);
+  setText("botName", BOT_CONFIG.name);
+  setText("botEmoji", BOT_CONFIG.emoji);
+  setText("botTagline", BOT_CONFIG.tagline);
+  if (BOT_CONFIG.themeColor) {
+    document.documentElement.style.setProperty("--accent", BOT_CONFIG.themeColor);
+  }
 }
 
 // ---------- API key storage (wrapped in try/catch) ----------
@@ -70,12 +83,12 @@ function closeKeyModal() {
   keyModal.hidden = true;
 }
 
-keyBtn.addEventListener("click", openKeyModal);
-keyCancel.addEventListener("click", closeKeyModal);
-keyModal.addEventListener("click", (e) => {
+on(keyBtn, "click", openKeyModal);
+on(keyCancel, "click", closeKeyModal);
+on(keyModal, "click", (e) => {
   if (e.target === keyModal) closeKeyModal();
 });
-keySave.addEventListener("click", () => {
+on(keySave, "click", () => {
   const key = keyInput.value.trim();
   if (!key) return;
   saveKey(key, rememberBox.checked);
@@ -83,11 +96,11 @@ keySave.addEventListener("click", () => {
   addBubble("bot", "Key saved! Ask me anything. 🎉");
   initKnowledge(); // now that there is a key, load / prepare the notes
 });
-keyInput.addEventListener("keydown", (e) => {
+on(keyInput, "keydown", (e) => {
   if (e.key === "Enter") keySave.click();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !keyModal.hidden) closeKeyModal();
+  if (e.key === "Escape" && keyModal && !keyModal.hidden) closeKeyModal();
 });
 
 // ---------- Safe text formatting ----------
@@ -192,6 +205,7 @@ function showThinking() {
 
 // ---------- Starter buttons ----------
 function renderStarters() {
+  if (!startersEl) return;
   startersEl.innerHTML = "";
   for (const question of (BOT_CONFIG.starterQuestions || [])) {
     const btn = document.createElement("button");
@@ -204,7 +218,7 @@ function renderStarters() {
 }
 
 function showStarters(show) {
-  startersEl.style.display = show ? "" : "none";
+  if (startersEl) startersEl.style.display = show ? "" : "none";
 }
 
 // ---------- Saved conversation ----------
@@ -269,7 +283,7 @@ function renderChat() {
 }
 
 // ---------- New chat ----------
-newChatBtn.addEventListener("click", () => {
+on(newChatBtn, "click", () => {
   if (isWaiting) return;
   history = [];
   clearSavedChat();
@@ -306,451 +320,4 @@ let loadRun = 0;                          // used to ignore out-of-date loads
 
 // ---------- Status line under the header ----------
 function setStatus(message) {
-  if (!KNOWLEDGE_ON || !message) {
-    statusEl.hidden = true;
-    statusEl.textContent = "";
-    return;
-  }
-  statusEl.textContent = message;
-  statusEl.hidden = false;
-}
-
-function updateStatus() {
-  const count = knowledge.notes.length;
-  const noteWord = count === 1 ? "note" : "notes";
-
-  if (knowledge.currentMethod === "meaning") {
-    setStatus("📚 " + count + " " + noteWord + " loaded · meaning search");
-  } else if (WANTS_MEANING && !getKey()) {
-    setStatus("📚 " + count + " " + noteWord + " loaded · keyword search (add your API key to turn on meaning search)");
-  } else if (WANTS_MEANING) {
-    setStatus("📚 " + count + " " + noteWord + " loaded · keyword search (meaning search isn't working right now)");
-  } else {
-    setStatus("📚 " + count + " " + noteWord + " loaded · keyword search");
-  }
-}
-
-// ---------- Step 1: read knowledge.md and split it into notes ----------
-// Each note starts with a line like "## Note title".
-// Anything above the first "##" line is ignored.
-function splitLongText(text, maxLength) {
-  if (text.length <= maxLength) return [text];
-
-  const paragraphs = text.split(/\n\s*\n/); // blank lines
-  const parts = [];
-  let current = "";
-
-  for (const paragraph of paragraphs) {
-    const para = paragraph.trim();
-    if (!para) continue;
-    if (current && current.length + 2 + para.length > maxLength) {
-      parts.push(current);
-      current = para;
-    } else {
-      current = current ? current + "\n\n" + para : para;
-    }
-  }
-  if (current) parts.push(current);
-  return parts;
-}
-
-function parseNotes(markdown) {
-  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
-  const rawNotes = [];
-  let current = null;
-
-  for (const line of lines) {
-    const heading = line.match(/^##\s+(.+?)\s*$/);
-    if (heading) {
-      current = { title: heading[1], lines: [] };
-      rawNotes.push(current);
-    } else if (current) {
-      current.lines.push(line);
-    }
-    // lines before the first "##" are ignored
-  }
-
-  const notes = [];
-  for (const raw of rawNotes) {
-    const body = raw.lines.join("\n").trim();
-    if (!body) continue; // skip a title with no text
-    const parts = splitLongText(body, MAX_NOTE_LENGTH);
-    parts.forEach((part, index) => {
-      const title = parts.length === 1
-        ? raw.title
-        : raw.title + " (part " + (index + 1) + " of " + parts.length + ")";
-      notes.push({ title: title, text: part });
-    });
-  }
-  return notes;
-}
-
-// ---------- A short "fingerprint" of the notes file ----------
-// If knowledge.md changes, the fingerprint changes, and the saved
-// numbers are made again. Otherwise the saved numbers are reused.
-function hashText(text) {
-  let h = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(16) + "-" + text.length;
-}
-
-function loadCachedVectors(fingerprint, count) {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const saved = JSON.parse(raw);
-    if (
-      saved &&
-      saved.fingerprint === fingerprint &&
-      Array.isArray(saved.vectors) &&
-      saved.vectors.length === count
-    ) {
-      return saved.vectors;
-    }
-  } catch (e) { /* storage not available or damaged: just make them again */ }
-  return null;
-}
-
-function saveCachedVectors(fingerprint, vectors) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ fingerprint: fingerprint, vectors: vectors }));
-  } catch (e) { /* too big or not available: that's okay */ }
-}
-
-// ---------- Step 2: turn text into numbers (embeddings) ----------
-async function embedBatch(texts) {
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/" +
-    encodeURIComponent(EMBEDDING_MODEL) +
-    ":batchEmbedContents";
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": getKey()
-    },
-    body: JSON.stringify({
-      requests: texts.map((text) => ({
-        model: "models/" + EMBEDDING_MODEL,
-        content: { parts: [{ text: text }] }
-      }))
-    })
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error((data.error && data.error.message) || "Embedding request failed");
-  }
-  if (!data.embeddings || data.embeddings.length !== texts.length) {
-    throw new Error("Unexpected embedding response");
-  }
-  return data.embeddings.map((e) => e.values);
-}
-
-async function embedAll(notes) {
-  const texts = notes.map((n) => n.title + "\n" + n.text);
-  const vectors = [];
-  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
-    const result = await embedBatch(batch);
-    for (const v of result) vectors.push(v);
-  }
-  return vectors;
-}
-
-// ---------- Load the notes when the page opens ----------
-function initKnowledge() {
-  if (!KNOWLEDGE_ON) {
-    knowledge.state = "off";
-    setStatus("");
-    return Promise.resolve();
-  }
-
-  const run = ++loadRun;
-  knowledge.state = "loading";
-  setStatus("📚 Loading notes...");
-
-  knowledgeLoading = (async () => {
-    let markdown = "";
-    try {
-      const res = await fetch(BOT_CONFIG.knowledgeFile || "knowledge.md", { cache: "no-cache" });
-      if (!res.ok) throw new Error("not found");
-      markdown = await res.text();
-    } catch (e) {
-      if (run !== loadRun) return;
-      knowledge.notes = [];
-      knowledge.vectors = null;
-      knowledge.currentMethod = "keywords";
-      knowledge.state = "missing";
-      setStatus("📚 Couldn't find knowledge.md (is it in the same folder as index.html?)");
-      return;
-    }
-    if (run !== loadRun) return;
-
-    const notes = parseNotes(markdown);
-    knowledge.notes = notes;
-    knowledge.vectors = null;
-    knowledge.currentMethod = "keywords";
-
-    if (notes.length === 0) {
-      knowledge.state = "empty";
-      setStatus("📚 No notes found (each note should start with ## Note title)");
-      return;
-    }
-
-    knowledge.state = "ready";
-    updateStatus();
-
-    // Meaning search needs an API key
-    if (WANTS_MEANING && getKey()) {
-      const fingerprint = hashText(markdown + "|" + EMBEDDING_MODEL);
-      let vectors = loadCachedVectors(fingerprint, notes.length);
-      if (!vectors) {
-        setStatus("📚 " + notes.length + " notes loaded · preparing meaning search...");
-        try {
-          vectors = await embedAll(notes);
-          saveCachedVectors(fingerprint, vectors);
-        } catch (e) {
-          vectors = null; // fall back to keyword search
-        }
-      }
-      if (run !== loadRun) return;
-      if (vectors) {
-        knowledge.vectors = vectors;
-        knowledge.currentMethod = "meaning";
-      }
-      updateStatus();
-    }
-  })();
-
-  return knowledgeLoading;
-}
-
-// ---------- Step 3: pick the best notes for a question ----------
-const STOP_WORDS = new Set([
-  "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are",
-  "was", "were", "be", "it", "this", "that", "with", "at", "by", "from", "as",
-  "i", "me", "my", "we", "you", "your", "do", "does", "can", "what", "whats",
-  "which", "who", "how", "any", "have", "has", "there", "about", "some", "want",
-  "like", "get", "im", "ive", "please", "tell"
-]);
-
-function tokenize(text) {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(
-    (w) => w.length > 1 && !STOP_WORDS.has(w)
-  );
-}
-
-function keywordSearch(question) {
-  const words = Array.from(new Set(tokenize(question)));
-  if (words.length === 0) return [];
-
-  const scored = knowledge.notes.map((note) => {
-    const titleWords = new Set(tokenize(note.title));
-    const bodyWords = tokenize(note.text);
-    let score = 0;
-    for (const w of words) {
-      if (titleWords.has(w)) score += 3;
-      for (const b of bodyWords) {
-        if (b === w) score += 1;
-      }
-    }
-    return { note: note, score: score };
-  });
-
-  return scored
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, TOP_K)
-    .map((s) => s.note);
-}
-
-function cosine(a, b) {
-  let dot = 0, na = 0, nb = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
-
-async function meaningSearch(question) {
-  const result = await embedBatch([question]);
-  const queryVector = result[0];
-  const scored = knowledge.notes.map((note, i) => ({
-    note: note,
-    score: cosine(queryVector, knowledge.vectors[i])
-  }));
-  return scored
-    .sort((a, b) => b.score - a.score)
-    .slice(0, TOP_K)
-    .map((s) => s.note);
-}
-
-async function findNotes(question) {
-  await knowledgeLoading;
-  if (!KNOWLEDGE_ON || knowledge.notes.length === 0) return [];
-
-  if (knowledge.currentMethod === "meaning" && knowledge.vectors) {
-    try {
-      return await meaningSearch(question);
-    } catch (e) {
-      return keywordSearch(question); // fall back if meaning search fails
-    }
-  }
-  return keywordSearch(question);
-}
-
-// =====================================================================
-//  TALKING TO GEMINI
-// =====================================================================
-
-// Finds the bot's personality in config.js, whatever it is called there.
-function getPersonality() {
-  const names = ["systemInstruction", "systemPrompt", "personality", "instructions", "prompt", "system"];
-  let text = "";
-  for (const name of names) {
-    const value = BOT_CONFIG[name];
-    if (typeof value === "string" && value.trim()) { text = value; break; }
-    if (Array.isArray(value) && value.length) { text = value.join("\n"); break; }
-  }
-  // Extra rules for using your notes (only when notes are turned on)
-  if (KNOWLEDGE_ON && typeof BOT_CONFIG.knowledgeRules === "string" && BOT_CONFIG.knowledgeRules.trim()) {
-    text += "\n\n" + BOT_CONFIG.knowledgeRules.trim();
-  }
-  return text;
-}
-
-function buildQuestionWithNotes(question, notes) {
-  if (!notes.length) return question;
-  let text = "NOTES from the knowledge file:\n\n";
-  notes.forEach((note, i) => {
-    text += "[" + (i + 1) + "] " + note.title + "\n" + note.text + "\n\n";
-  });
-  text += "Customer question: " + question;
-  return text;
-}
-
-async function askGemini(contents) {
-  const model = BOT_CONFIG.model || "gemini-flash-latest";
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/" +
-    encodeURIComponent(model) +
-    ":generateContent";
-
-  const body = { contents: contents };
-  const personality = getPersonality();
-  if (personality) {
-    body.systemInstruction = { parts: [{ text: personality }] };
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": getKey()
-    },
-    body: JSON.stringify(body)
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    const apiMessage = (data.error && data.error.message) || "";
-    if (response.status === 400 && /api key/i.test(apiMessage)) {
-      throw new Error("That API key doesn't look right. Tap **API key** and paste it again.");
-    }
-    if (response.status === 403) {
-      throw new Error("Google didn't accept that API key. Tap **API key** to try a different one.");
-    }
-    if (response.status === 429) {
-      throw new Error("Too many requests right now. Wait a minute and try again.");
-    }
-    throw new Error("Something went wrong. " + apiMessage);
-  }
-
-  const candidate = data.candidates && data.candidates[0];
-  const parts = candidate && candidate.content && candidate.content.parts;
-  const reply = parts ? parts.map((p) => p.text || "").join("").trim() : "";
-  if (!reply) {
-    throw new Error("I couldn't come up with an answer to that. Try asking another way!");
-  }
-  return reply;
-}
-
-// ---------- Send a message ----------
-async function sendMessage(text) {
-  const question = (text || "").trim();
-  if (!question || isWaiting) return;
-
-  if (!getKey()) {
-    addBubble("bot", "I need your Gemini API key first. Tap **API key** at the top to add it.");
-    openKeyModal();
-    return;
-  }
-
-  isWaiting = true;
-  sendBtn.disabled = true;
-  inputEl.value = "";
-  showStarters(false);
-
-  addBubble("user", question);
-  history.push({ role: "user", parts: [{ text: question }] });
-  saveChat();
-
-  const thinking = showThinking();
-
-  try {
-    const notes = await findNotes(question);
-
-    // Send the notes along with this one question only.
-    // The saved history keeps just the plain question.
-    const contents = history.slice(0, -1).concat([
-      { role: "user", parts: [{ text: buildQuestionWithNotes(question, notes) }] }
-    ]);
-
-    const reply = await askGemini(contents);
-
-    thinking.remove();
-    history.push({ role: "model", parts: [{ text: reply }] });
-    saveChat();
-    const bubble = addBubble("bot", reply);
-    addCopyButton(bubble, reply);
-    scrollToBottom();
-  } catch (err) {
-    thinking.remove();
-    // Take the failed question out so the conversation stays valid
-    history.pop();
-    saveChat();
-    const message = err && err.message ? err.message : "Something went wrong. Please try again.";
-    addBubble("bot", message);
-  } finally {
-    isWaiting = false;
-    sendBtn.disabled = false;
-    inputEl.focus();
-  }
-}
-
-sendBtn.addEventListener("click", () => sendMessage(inputEl.value));
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage(inputEl.value);
-  }
-});
-
-// =====================================================================
-//  START UP
-// =====================================================================
-applyConfig();
-renderStarters();
-history = loadSavedChat();
-renderChat();
-initKnowledge();
+  if
