@@ -94,7 +94,7 @@ on(keySave, "click", () => {
   saveKey(key, rememberBox.checked);
   closeKeyModal();
   addBubble("bot", "Key saved! Ask me anything. 🎉");
-  initKnowledge(); // now that there is a key, load / prepare the notes
+  knowledgeLoading = initKnowledge(); // now that there is a key, prepare the notes
 });
 on(keyInput, "keydown", (e) => {
   if (e.key === "Enter") keySave.click();
@@ -302,11 +302,13 @@ on(newChatBtn, "click", () => {
 const CACHE_KEY = "bitebuddy_embeddings";   // where the saved numbers live
 const MAX_NOTE_LENGTH = 1500;               // longer notes get split into parts
 const EMBED_BATCH_SIZE = 50;                // most notes sent per request
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
 
 const KNOWLEDGE_ON = BOT_CONFIG.useKnowledge !== false;
 const WANTS_MEANING = (BOT_CONFIG.searchMethod || "meaning") !== "keywords";
 const EMBEDDING_MODEL = BOT_CONFIG.embeddingModel || "gemini-embedding-2";
 const TOP_K = Number(BOT_CONFIG.topK) > 0 ? Number(BOT_CONFIG.topK) : 3;
+const CHAT_MODEL = BOT_CONFIG.model || "gemini-flash-latest";
 
 // Everything the bot knows about your notes right now
 let knowledge = {
@@ -318,6 +320,4 @@ let knowledge = {
 let knowledgeLoading = Promise.resolve(); // lets questions wait for loading
 let loadRun = 0;                          // used to ignore out-of-date loads
 
-// ---------- Status line under the header ----------
-function setStatus(message) {
-  if
+//
